@@ -1,0 +1,7 @@
+# Arquivos de ambiente e certificados
+.env
+ca.pem
+
+# Ambientes virtuais e cache do Python
+env/
+__pycache__/
