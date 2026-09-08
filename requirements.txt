@@ -1,0 +1,7 @@
+# Aplicação web e banco de dados
+Flask
+mysql-connector-python
+python-dotenv
+
+# Testes automatizados
+pytest
