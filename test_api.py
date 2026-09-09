@@ -34,7 +34,7 @@ IMOVEL_VALIDO = {
     "tipo_logradouro": "Rua",
     "bairro": "Centro",
     "cidade": "São Paulo",
-    "cep": "45896",
+    "cep": "01001-000",
     "tipo": "apartamento",
     "valor": 350000.00,
     "data_aquisicao": "2024-01-15",
@@ -59,6 +59,7 @@ def banco_mock():
     conexao.cursor.return_value = cursor
     conexao.is_connected.return_value = True
 
+    # Como api.py importou a função diretamente, o patch deve ser feito em api.
     with patch.object(api, "get_db_connection", return_value=conexao) as obter_conexao:
         yield obter_conexao, conexao, cursor
 
@@ -67,6 +68,21 @@ def assert_recursos_fechados(conexao, cursor):
     """Confere que cada requisição liberou cursor e conexão."""
     cursor.close.assert_called_once_with()
     conexao.close.assert_called_once_with()
+
+
+def assert_link(payload, relacao, caminho, metodo):
+    """Valida um controle de hipermídia sem fixar host ou protocolo."""
+    link = payload["_links"][relacao]
+    assert link["href"].endswith(caminho)
+    assert link["method"] == metodo
+
+
+def assert_links_do_imovel(payload, imovel_id):
+    """Confere as transições de estado disponíveis para um imóvel."""
+    assert_link(payload, "self", f"/imoveis/{imovel_id}", "GET")
+    assert_link(payload, "collection", "/imoveis", "GET")
+    assert_link(payload, "update", f"/imoveis/{imovel_id}", "PUT")
+    assert_link(payload, "delete", f"/imoveis/{imovel_id}", "DELETE")
 
 
 # ---------- connect_db.py ----------
@@ -120,7 +136,12 @@ def test_listar_imoveis_retorna_todos_os_registros(client, banco_mock):
     resposta = client.get("/imoveis")
 
     assert resposta.status_code == 200
-    assert resposta.get_json() == [IMOVEL_SALVO]
+    dados = resposta.get_json()
+    imovel = dados["items"][0]
+    assert {chave: valor for chave, valor in imovel.items() if chave != "_links"} == IMOVEL_SALVO
+    assert_links_do_imovel(imovel, 1)
+    assert_link(dados, "self", "/imoveis", "GET")
+    assert_link(dados, "create", "/imoveis", "POST")
     conexao.cursor.assert_called_once_with(dictionary=True)
     cursor.execute.assert_called_once_with("SELECT * FROM imoveis;")
     assert_recursos_fechados(conexao, cursor)
@@ -142,7 +163,9 @@ def test_obter_imovel_retorna_registro_quando_ele_existe(client, banco_mock):
     resposta = client.get("/imoveis/1")
 
     assert resposta.status_code == 200
-    assert resposta.get_json() == IMOVEL_SALVO
+    dados = resposta.get_json()
+    assert {chave: valor for chave, valor in dados.items() if chave != "_links"} == IMOVEL_SALVO
+    assert_links_do_imovel(dados, 1)
     cursor.execute.assert_called_once_with(
         "SELECT * FROM imoveis WHERE id = %s;", (1,)
     )
@@ -156,7 +179,9 @@ def test_obter_imovel_retorna_404_quando_ele_nao_existe(client, banco_mock):
     resposta = client.get("/imoveis/999")
 
     assert resposta.status_code == 404
-    assert resposta.get_json() == {"erro": "Imóvel não encontrado"}
+    dados = resposta.get_json()
+    assert dados["erro"] == "Imóvel não encontrado"
+    assert_link(dados, "collection", "/imoveis", "GET")
     assert_recursos_fechados(conexao, cursor)
 
 
@@ -169,7 +194,11 @@ def test_adicionar_imovel_insere_dados_e_retorna_201(client, banco_mock):
     resposta = client.post("/imoveis", json=IMOVEL_VALIDO)
 
     assert resposta.status_code == 201
-    assert resposta.get_json() == {"id": 12}
+    dados = resposta.get_json()
+    assert dados["id"] == 12
+    assert dados["logradouro"] == IMOVEL_VALIDO["logradouro"]
+    assert_links_do_imovel(dados, 12)
+    assert resposta.headers["Location"].endswith("/imoveis/12")
     conexao.cursor.assert_called_once_with(dictionary=True)
     sql, parametros = cursor.execute.call_args.args
     assert "INSERT INTO imoveis" in sql
@@ -212,7 +241,11 @@ def test_atualizar_imovel_altera_registro_existente(client, banco_mock):
     resposta = client.put("/imoveis/1", json=dados_atualizados)
 
     assert resposta.status_code == 200
-    assert resposta.get_json() == {"mensagem": "Imóvel atualizado com sucesso"}
+    dados = resposta.get_json()
+    assert dados["mensagem"] == "Imóvel atualizado com sucesso"
+    assert dados["id"] == 1
+    assert dados["valor"] == dados_atualizados["valor"]
+    assert_links_do_imovel(dados, 1)
     sql, parametros = cursor.execute.call_args.args
     assert "UPDATE imoveis SET" in sql
     assert parametros == (
@@ -242,7 +275,9 @@ def test_atualizar_imovel_retorna_404_quando_id_nao_existe(client, banco_mock):
     resposta = client.put("/imoveis/999", json=IMOVEL_VALIDO)
 
     assert resposta.status_code == 404
-    assert resposta.get_json() == {"erro": "Imóvel não encontrado"}
+    dados = resposta.get_json()
+    assert dados["erro"] == "Imóvel não encontrado"
+    assert_link(dados, "collection", "/imoveis", "GET")
     conexao.commit.assert_called_once_with()
     assert_recursos_fechados(conexao, cursor)
 
@@ -254,7 +289,10 @@ def test_deletar_imovel_exclui_registro_existente(client, banco_mock):
     resposta = client.delete("/imoveis/1")
 
     assert resposta.status_code == 200
-    assert resposta.get_json() == {"mensagem": "Imóvel excluído com sucesso"}
+    dados = resposta.get_json()
+    assert dados["mensagem"] == "Imóvel excluído com sucesso"
+    assert_link(dados, "collection", "/imoveis", "GET")
+    assert_link(dados, "create", "/imoveis", "POST")
     cursor.execute.assert_called_once_with("DELETE FROM imoveis WHERE id = %s;", (1,))
     conexao.commit.assert_called_once_with()
     assert_recursos_fechados(conexao, cursor)
@@ -267,7 +305,9 @@ def test_deletar_imovel_retorna_404_quando_id_nao_existe(client, banco_mock):
     resposta = client.delete("/imoveis/999")
 
     assert resposta.status_code == 404
-    assert resposta.get_json() == {"erro": "Imóvel não encontrado"}
+    dados = resposta.get_json()
+    assert dados["erro"] == "Imóvel não encontrado"
+    assert_link(dados, "collection", "/imoveis", "GET")
     assert_recursos_fechados(conexao, cursor)
 
 
@@ -280,7 +320,11 @@ def test_listar_imoveis_por_tipo_normaliza_o_valor(client, banco_mock):
     resposta = client.get("/imoveis/tipo/APARTAMENTO")
 
     assert resposta.status_code == 200
-    assert resposta.get_json() == [IMOVEL_SALVO]
+    dados = resposta.get_json()
+    assert dados["items"][0]["id"] == IMOVEL_SALVO["id"]
+    assert_links_do_imovel(dados["items"][0], 1)
+    assert_link(dados, "collection", "/imoveis", "GET")
+    assert_link(dados, "create", "/imoveis", "POST")
     cursor.execute.assert_called_once_with(
         "SELECT * FROM imoveis WHERE LOWER(tipo) = %s;", ("apartamento",)
     )
@@ -306,7 +350,11 @@ def test_listar_imoveis_por_cidade_retorna_registros_da_cidade(client, banco_moc
     resposta = client.get("/imoveis/cidade/S%C3%A3o%20Paulo")
 
     assert resposta.status_code == 200
-    assert resposta.get_json() == [IMOVEL_SALVO]
+    dados = resposta.get_json()
+    assert dados["items"][0]["id"] == IMOVEL_SALVO["id"]
+    assert_links_do_imovel(dados["items"][0], 1)
+    assert_link(dados, "collection", "/imoveis", "GET")
+    assert_link(dados, "create", "/imoveis", "POST")
     assert cursor.execute.call_count == 2
     assert cursor.execute.call_args_list[1].args[1] == ("são paulo",)
     assert_recursos_fechados(conexao, cursor)
@@ -321,8 +369,8 @@ def test_listar_imoveis_por_cidade_retorna_404_quando_cidade_nao_foi_cadastrada(
     resposta = client.get("/imoveis/cidade/Manaus")
 
     assert resposta.status_code == 404
-    assert resposta.get_json() == {
-        "erro": "Cidade não encontrada nos imóveis cadastrados"
-    }
+    dados = resposta.get_json()
+    assert dados["erro"] == "Cidade não encontrada nos imóveis cadastrados"
+    assert_link(dados, "collection", "/imoveis", "GET")
     cursor.execute.assert_called_once()
     assert_recursos_fechados(conexao, cursor)
